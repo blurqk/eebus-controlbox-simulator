@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"log"
+	"math"
 	"sync"
 
 	ucapi "github.com/enbility/eebus-go/usecases/api"
@@ -21,10 +23,17 @@ func (websocketClient *WebsocketClient) sendMessage(msg interface{}) error {
 		return errors.New("no frontend connected")
 	}
 
+	// Encode first: an unencodable message must not drop the connection.
+	data, err := json.Marshal(msg)
+	if err != nil {
+		log.Println("websocket encode error:", err)
+		return err
+	}
+
 	websocketClient.mutex.Lock()
 	defer websocketClient.mutex.Unlock()
 
-	err := websocketClient.websocket.WriteJSON(msg)
+	err = websocketClient.websocket.WriteMessage(websocket.TextMessage, data)
 	if err != nil {
 		if !websocket.IsCloseError(err,
 			websocket.CloseNormalClosure,
@@ -37,6 +46,15 @@ func (websocketClient *WebsocketClient) sendMessage(msg interface{}) error {
 	}
 
 	return err
+}
+
+// finite replaces values JSON cannot encode. Devices like the Weidmueller ERC
+// report "no limit" as +Inf, which is shown as 0 in the frontend.
+func finite(value float64) float64 {
+	if math.IsInf(value, 0) || math.IsNaN(value) {
+		return 0
+	}
+	return value
 }
 
 func (websocketClient *WebsocketClient) sendNotification(ski string, messageType int, uc string) error {
@@ -60,23 +78,30 @@ func (websocketClient *WebsocketClient) sendValue(ski string, messageType int, u
 	answer := Message{
 		SKI:     ski,
 		Type:    messageType,
-		Value:   value,
+		Value:   finite(value),
 		UseCase: useCase}
 
 	return websocketClient.sendMessage(answer)
 }
 
 func (websocketClient *WebsocketClient) sendValueArr(ski string, messageType int, useCase string, values []float64) error {
+	finiteValues := make([]float64, len(values))
+	for i, value := range values {
+		finiteValues[i] = finite(value)
+	}
+
 	answer := Message{
 		SKI:     ski,
 		Type:    messageType,
-		Values:  values,
+		Values:  finiteValues,
 		UseCase: useCase}
 
 	return websocketClient.sendMessage(answer)
 }
 
 func (websocketClient *WebsocketClient) sendLimit(ski string, messageType int, useCase string, limit ucapi.LoadLimit) error {
+	limit.Value = finite(limit.Value)
+
 	answer := Message{
 		SKI:     ski,
 		Type:    messageType,

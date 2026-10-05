@@ -2,8 +2,13 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"time"
 )
+
+// debugLogging enables DEBUG output (SHIP handshake, SPINE messages) when
+// EEBUS_DEBUG is set, e.g. EEBUS_DEBUG=1 go run . 4712
+var debugLogging = os.Getenv("EEBUS_DEBUG") != ""
 
 // Logging interface
 
@@ -16,11 +21,15 @@ func (h *controlbox) Tracef(format string, args ...interface{}) {
 }
 
 func (h *controlbox) Debug(args ...interface{}) {
-	// h.print("DEBUG", args...)
+	if debugLogging {
+		h.print("DEBUG", args...)
+	}
 }
 
 func (h *controlbox) Debugf(format string, args ...interface{}) {
-	// h.printFormat("DEBUG", format, args...)
+	if debugLogging {
+		h.printFormat("DEBUG", format, args...)
+	}
 }
 
 func (h *controlbox) Info(args ...interface{}) {

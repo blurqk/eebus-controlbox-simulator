@@ -4,12 +4,14 @@ import (
 	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/pem"
 	"fmt"
 	"log"
 	"os"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,11 +23,12 @@ import (
 	"github.com/enbility/eebus-go/usecases/ma/mgcp"
 	"github.com/enbility/eebus-go/usecases/ma/mpc"
 	shipapi "github.com/enbility/ship-go/api"
-	"github.com/joho/godotenv"
-	_ "github.com/joho/godotenv/autoload"
 	"github.com/enbility/ship-go/cert"
+	"github.com/enbility/ship-go/mdns"
 	spineapi "github.com/enbility/spine-go/api"
 	"github.com/enbility/spine-go/model"
+	"github.com/joho/godotenv"
+	_ "github.com/joho/godotenv/autoload"
 )
 
 type failsafeLimits struct {
@@ -122,6 +125,51 @@ func generateAndPersistCertificate() (tls.Certificate, error) {
 	return certTLS, nil
 }
 
+// parsePairingQR parses the content of a SHIP Pairing Service QR code, e.g.
+// SHIP;SKI:xxx;ID:xxx;BRAND:xxx;...;FPH256:xxx;SPSEC:xxx;ENDSHIP;
+// Devices like the Weidmueller ERC do not let the user enter a trusted SKI;
+// instead the control unit has to announce itself using the secret (SPSEC)
+// printed in the device's QR code.
+func parsePairingQR(qr string) (shipapi.PairingTarget, error) {
+	var target shipapi.PairingTarget
+
+	qr = strings.TrimSpace(qr)
+	if !strings.HasPrefix(qr, "SHIP;") || !strings.HasSuffix(qr, "ENDSHIP;") {
+		return target, fmt.Errorf("pairing QR must start with 'SHIP;' and end with 'ENDSHIP;'")
+	}
+
+	for _, field := range strings.Split(qr, ";") {
+		key, value, found := strings.Cut(field, ":")
+		if !found {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		switch key {
+		case "SKI":
+			target.SKI = value
+		case "ID":
+			target.ShipID = value
+		case "FPH256":
+			target.Fingerprint = value
+		case "SPSEC":
+			secret, err := hex.DecodeString(value)
+			if err != nil {
+				return target, fmt.Errorf("SPSEC is not valid hex: %w", err)
+			}
+			if !shipapi.PairingSecret(secret).IsValidLength() {
+				return target, fmt.Errorf("SPSEC must be 16 bytes (32 hex characters)")
+			}
+			target.Secret = secret
+		}
+	}
+
+	if target.IsEmpty() {
+		return target, fmt.Errorf("pairing QR must contain SKI, ID, FPH256 and SPSEC")
+	}
+
+	return target, nil
+}
+
 func (h *controlbox) run() {
 	port, err := strconv.Atoi(os.Args[1])
 	if err != nil {
@@ -133,24 +181,42 @@ func (h *controlbox) run() {
 		log.Fatal(err)
 	}
 
-	vendorCode := "Demo"
-	deviceBrand := "Demo"
-	deviceModel := "ControlBox"
+	vendorCode := "PPC"
+	deviceBrand := "PPC"
+	deviceModel := "SMGWplus"
 	serialNumber := "123456789"
 	altIdentifier := "ControlBox Simulator SN-" + serialNumber
 
 	h.isConnected = map[string]bool{}
+
+	// Optional SHIP Pairing Service: act as announcer (devZ) towards a device
+	// whose pairing QR code content is given in PAIRING_QR.
+	var pairingConfig *shipapi.PairingConfig
+	var pairingTarget *shipapi.PairingTarget
+	if qr := os.Getenv("PAIRING_QR"); qr != "" {
+		target, err := parsePairingQR(qr)
+		if err != nil {
+			log.Fatal(err)
+		}
+		pairingTarget = &target
+		pairingConfig = shipapi.NewPairingConfig(shipapi.PairingModeAnnouncer, nil)
+	}
 
 	configuration, err := api.NewConfiguration(
 		vendorCode, deviceBrand, deviceModel, serialNumber,
 		[]shipapi.DeviceCategoryType{shipapi.DeviceCategoryTypeGridConnectionHub},
 		model.DeviceTypeTypeElectricitySupplySystem,
 		[]model.EntityTypeType{model.EntityTypeTypeGridGuard},
-		port, certificate, time.Second*10, nil, nil)
+		port, certificate, time.Second*10, pairingConfig, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
 	configuration.SetAlternateIdentifier(altIdentifier)
+	// Avahi fails to resolve some devices (e.g. Weidmueller ERC) that the
+	// native Go zeroconf implementation handles fine.
+	if os.Getenv("MDNS_ZEROCONF") != "" {
+		configuration.SetMdnsProviderSelection(mdns.MdnsProviderSelectionGoZeroConfOnly)
+	}
 
 	h.myService = service.NewService(configuration, h)
 	h.myService.SetLogging(h)
@@ -163,6 +229,8 @@ func (h *controlbox) run() {
 	// trust every remote service, as the old SetTrusted-on-discovery did.
 	// Setup creates the local service, so this must run after it.
 	h.myService.SetAutoAccept(true)
+
+	_ = h.myService.LocalDevice().Events().Subscribe(discoveryLogger{})
 
 	localEntity := h.myService.LocalDevice().EntityForType(model.EntityTypeTypeGridGuard)
 	h.uclpc = lpc.NewLPC(localEntity, h.OnLPCEvent)
@@ -180,7 +248,19 @@ func (h *controlbox) run() {
 	h.remoteInfos = map[string]RemoteInfo{}
 	h.useCaseInfos = map[string][]UseCaseInfo{}
 
-	h.myService.Start()
+	if err := h.myService.Start(); err != nil {
+		log.Fatal(err)
+	}
+
+	if pairingTarget != nil {
+		// The announcer must already trust the target before announcing.
+		h.myService.RegisterRemoteService(shipapi.NewServiceIdentity(
+			pairingTarget.SKI, pairingTarget.Fingerprint, pairingTarget.ShipID))
+		if err := h.myService.StartAnnouncementTo(*pairingTarget); err != nil {
+			log.Fatal("SHIP pairing announcement failed: ", err)
+		}
+		fmt.Println("SHIP pairing: announcing to " + pairingTarget.ShipID + " (SKI " + pairingTarget.SKI + ")")
+	}
 }
 
 // EEBUSServiceHandler
@@ -204,8 +284,12 @@ func (h *controlbox) VisibleRemoteMdnsServicesUpdated(service api.ServiceInterfa
 	fmt.Print("VisibleRemoteMdnsServicesUpdated, count: ")
 	fmt.Println(len(entries))
 
-	for _, element := range entries {
-		fmt.Println("Remote SKI: " + element.Ski)
+	// SPINE events report SKIs in lowercase, while some devices (e.g. the
+	// Weidmueller ERC) announce them in uppercase via mDNS. Normalize so the
+	// service list, entity infos and frontend all use the same key.
+	for i := range entries {
+		entries[i].Ski = strings.ToLower(entries[i].Ski)
+		fmt.Println("Remote SKI: " + entries[i].Ski)
 	}
 
 	h.currentRemoteServices = entries
@@ -243,12 +327,15 @@ func (h *controlbox) ServiceAutoTrustRemoved(service api.ServiceInterface, ident
 func (h *controlbox) updateEntityInfos(ski string, device spineapi.DeviceRemoteInterface, uc string) {
 	info, exists := h.remoteInfos[ski]
 	if !exists {
-		indx := slices.IndexFunc(h.currentRemoteServices, func(v shipapi.RemoteMdnsService) bool { return v.Ski == ski })
-		h.remoteInfos[ski] = RemoteInfo{
-			Service:  h.currentRemoteServices[indx],
+		info = RemoteInfo{
 			Device:   device,
 			UseCases: []string{uc},
 		}
+		indx := slices.IndexFunc(h.currentRemoteServices, func(v shipapi.RemoteMdnsService) bool { return strings.EqualFold(v.Ski, ski) })
+		if indx >= 0 {
+			info.Service = h.currentRemoteServices[indx]
+		}
+		h.remoteInfos[ski] = info
 	} else {
 		info.Device = device
 		found := slices.Contains(info.UseCases, uc)
