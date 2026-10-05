@@ -53,23 +53,61 @@
         v-bind:placeholder="! selectedEntity ? '' : (optionFeatures.length + (optionFeatures.length == 1 ? ' feature' : ' features'))">
       </VueSelect>
     </div>
+    <div v-if="'' < selectedSki && (existsUC('limitationOfPowerProduction') || existsUC('limitationOfPowerConsumption'))" class="outputs">
+      <h3>ERC Outputs</h3>
+      <p v-if="! hasInstalledPv && ledRules.some( r => 'LPP' == r.Source )" class="hint">
+        Feed-in outputs need the installed PV power (Production Limit panel).
+      </p>
+      <div class="leds">
+        <div v-for="rule in ledRules" :key="rule.Name" class="led-item" :title="ledHint( rule )">
+          <span :class="['led', ledState( rule )]"></span>
+          <label>{{ rule.Name }}</label>
+        </div>
+      </div>
+      <details class="led-config">
+        <summary>Configure outputs</summary>
+        <div class="led-config-grid">
+          <template v-for="rule in ledRules" :key="rule.Name">
+            <label>{{ rule.Name }}</label>
+            <select v-model="rule.Source" @change="saveSettings">
+              <option value="LPP">Feed-in limited to</option>
+              <option value="LPC">Consumption limit active</option>
+              <option value="off">Not used</option>
+            </select>
+            <span v-if="rule.Source == 'LPP'"><input type="number" v-model.number="rule.Step" min="0" max="100" @change="saveSettings" /> %</span>
+            <span v-else></span>
+          </template>
+        </div>
+      </details>
+    </div>
+
     <div class="usecases">
       <div v-if="'' < selectedSki && !!selectedLs && !!selectedLs['LPC'] && existsUC('limitationOfPowerConsumption')">
         <h3>Consumption Limit</h3>
+        <div class="quick-buttons">
+          <button type="button" :class="{ selected: isConsumptionLimited( true ) }"
+            :title="'Limit consumption to ' + formatted( consumptionLimitValue ) + ' W'"
+            @click="setConsumption( true )">Limit</button>
+          <button type="button" :class="{ selected: isConsumptionLimited( false ) }"
+            title="Deactivate the consumption limit"
+            @click="setConsumption( false )">No Limit</button>
+        </div>
         <div class="form-line3">
           <label>Active:</label>
           <input type="checkbox" v-model="selectedLs['LPC'].IsActive" @input="onLPCUserChanged" />
 
           <label>Dimmed Value [W]:</label>
-          <input type="number" v-model="selectedLs['LPC'].Value" @input="onLPCUserChanged" />
-          <button class="three-lines" type="button" @click="setConsumptionLimit">Set</button>
+          <input type="number" v-model="selectedLs['LPC'].Value" placeholder="unlimited" @input="onLPCUserChanged" />
+          <button class="three-lines" type="button" @click="setConsumptionLimit"
+            :disabled="isUnlimited( selectedLs['LPC'].Value )" :title="unlimitedHint( selectedLs['LPC'].Value )">Set</button>
 
           <label>Dimmed Duration [s]:</label>
           <input type="number" v-model="selectedLs['LPC'].Duration" @input="onLPCUserChanged" />
 
           <label>Failsafe Value [W]:</label>
-          <input type="number" v-model="selectedLs['LPC'].FSValue" @input="onLPCUserChanged" />
-          <button type="button" @click="setConsumptionFailsafeLimit">Set</button>
+          <input type="number" v-model="selectedLs['LPC'].FSValue" placeholder="unlimited" @input="onLPCUserChanged" />
+          <button type="button" @click="setConsumptionFailsafeLimit"
+            :disabled="isUnlimited( selectedLs['LPC'].FSValue )" :title="unlimitedHint( selectedLs['LPC'].FSValue )">Set</button>
 
           <label>Failsafe Duration [s]:</label>
           <input type="number" v-model="selectedLs['LPC'].FSDuration" @input="onLPCUserChanged" />
@@ -88,20 +126,29 @@
 
       <div v-if="'' < selectedSki && !!selectedLs && !!selectedLs['LPP'] && existsUC('limitationOfPowerProduction')">
         <h3>Production Limit</h3>
+        <div class="quick-buttons">
+          <button v-for="pct in feedInSteps" :key="pct" type="button"
+            :class="{ selected: isFeedInStep( pct ) }" :disabled="! hasInstalledPv"
+            :title="hasInstalledPv ? feedInHint( pct ) : 'Enter the installed PV power first'"
+            @click="setFeedIn( pct )">{{ pct }} %</button>
+          <span v-if="! hasInstalledPv" class="hint">Enter installed PV power first (below)</span>
+        </div>
         <div class="form-line3">
           <label>Active:</label>
           <input type="checkbox" v-model="selectedLs['LPP'].IsActive" @input="onLPPUserChanged" />
 
           <label>Dimmed Value [W]:</label>
-          <input type="number" v-model="selectedLs['LPP'].Value" @input="onLPPUserChanged" />
-          <button class="three-lines" type="button" @click="setProductionLimit">Set</button>
+          <input type="number" v-model="selectedLs['LPP'].Value" placeholder="unlimited" @input="onLPPUserChanged" />
+          <button class="three-lines" type="button" @click="setProductionLimit"
+            :disabled="isUnlimited( selectedLs['LPP'].Value )" :title="unlimitedHint( selectedLs['LPP'].Value )">Set</button>
           
           <label>Dimmed Duration [s]:</label>
           <input type="number" v-model="selectedLs['LPP'].Duration" @input="onLPPUserChanged" />
           
           <label>Failsafe Value [W]:</label>
-          <input type="number" v-model="selectedLs['LPP'].FSValue" @input="onLPPUserChanged" />
-          <button type="button" @click="setProductionFailsafeLimit">Set</button>
+          <input type="number" v-model="selectedLs['LPP'].FSValue" placeholder="unlimited" @input="onLPPUserChanged" />
+          <button type="button" @click="setProductionFailsafeLimit"
+            :disabled="isUnlimited( selectedLs['LPP'].FSValue )" :title="unlimitedHint( selectedLs['LPP'].FSValue )">Set</button>
           
           <label>Failsafe Duration [s]:</label>
           <input type="number" v-model="selectedLs['LPP'].FSDuration" @input="onLPPUserChanged" />
@@ -109,6 +156,11 @@
           
           <label>Nominal Maximum [W]:</label>
           <input type="number" v-model="productionNominalMax[selectedSki]" />
+          <div></div>
+
+          <label>Installed PV Power [Wp]:</label>
+          <input type="number" v-model.number="installedPv[selectedSki]" placeholder="Wp" @change="saveSettings"
+            :class="{ missing: ! hasInstalledPv }" />
           <div></div>
 
           <label>Received Heartbeat:</label>
@@ -236,10 +288,46 @@
 
   interface Limits {
     IsActive:   boolean,
-	  Value:      number,
+	  Value:      number | null,   // null: no limit (device reported +Inf)
 	  Duration:   number,
-	  FSValue:    number,
+	  FSValue:    number | null,   // null: no limit (device reported +Inf)
 	  FSDuration: number
+  }
+
+  // An ERC output LED: lit for a feed-in step (LPP, in % of installed PV
+  // power) or while a consumption limit (LPC) is active.
+  interface LedRule {
+    Name:   string,
+    Source: 'LPP' | 'LPC' | 'off',
+    Step:   number
+  }
+
+  interface ReportedLimit {
+    IsActive: boolean,
+    Value:    number | null
+  }
+
+  interface Settings {
+    installedPv?: {[key:string]:number | string},
+    ledRules?:    LedRule[]
+  }
+
+  const settingsKey = "controlbox.settings";
+
+  const defaultLedRules: LedRule[] = [
+    { Name: "S1", Source: "LPP", Step: 60 },
+    { Name: "S2", Source: "LPP", Step: 30 },
+    { Name: "W3", Source: "LPP", Step: 0 },
+    { Name: "W4", Source: "LPC", Step: 0 }
+  ];
+
+  function loadSettings(): Settings {
+    try {
+      return JSON.parse( localStorage.getItem( settingsKey ) ?? "{}" ) as Settings;
+    }
+    catch {
+      return {};
+    }
   }
 
   interface Monitorings {
@@ -285,6 +373,7 @@
     Text?:         string,
     Limit?:        Limits,
     Value?:        number,
+    Unlimited?:    boolean,
     Values?:       number[],
     ServiceList?:  RemoteService[],
     EntityInfos?:  EntityInfo[],
@@ -318,6 +407,13 @@
 
     private lpcUserChanged = false;
     private lppUserChanged = false;
+
+    public readonly feedInSteps = [0, 30, 60, 100];
+    public installedPv: {[key:string]:number | string} = loadSettings().installedPv ?? {};
+    public ledRules: LedRule[] = loadSettings().ledRules ?? defaultLedRules.map( r => ({ ...r }) );
+
+    // limits as confirmed by the device, independent of unsent form input
+    private reportedLimits: {[key:string]:{[key:string]:ReportedLimit}} = {};
 
     public existsUC( uc: string ): boolean {
       var exists = false;
@@ -518,19 +614,21 @@
             break;
           }
           case MessageType.GetConsumptionLimit: {
+            this.setReportedLimit( message );
             if ( ! this.lpcUserChanged ) {
               this.updateDeviceData( message.UseCase! );
               this.limits[message.SKI][message.UseCase!].IsActive = message.Limit?.IsActive ?? false;
-              this.limits[message.SKI][message.UseCase!].Value    = message.Limit?.Value ?? 0;
+              this.limits[message.SKI][message.UseCase!].Value    = message.Unlimited ? null : message.Limit?.Value ?? 0;
               this.limits[message.SKI][message.UseCase!].Duration = message.Limit?.Duration ?? 0;
             }
             break;
           }
           case MessageType.GetProductionLimit: {
+            this.setReportedLimit( message );
             if ( ! this.lppUserChanged ) {
               this.updateDeviceData( message.UseCase! );
               this.limits[message.SKI][message.UseCase!].IsActive = message.Limit?.IsActive ?? false;
-              this.limits[message.SKI][message.UseCase!].Value    = message.Limit?.Value ?? 0;
+              this.limits[message.SKI][message.UseCase!].Value    = message.Unlimited ? null : message.Limit?.Value ?? 0;
               this.limits[message.SKI][message.UseCase!].Duration = message.Limit?.Duration ?? 0;
             }
             break;
@@ -538,14 +636,14 @@
           case MessageType.GetConsumptionFailsafeValue: {
             if ( ! this.lpcUserChanged ) {
               this.updateDeviceData( message.UseCase! );
-              this.limits[message.SKI][message.UseCase!].FSValue = message.Value ?? 0;
+              this.limits[message.SKI][message.UseCase!].FSValue = message.Unlimited ? null : message.Value ?? 0;
             }
             break;
           }
           case MessageType.GetProductionFailsafeValue: {
             if ( ! this.lppUserChanged ) {
               this.updateDeviceData( message.UseCase! );
-              this.limits[message.SKI][message.UseCase!].FSValue = message.Value ?? 0;
+              this.limits[message.SKI][message.UseCase!].FSValue = message.Unlimited ? null : message.Value ?? 0;
             }
             break;
           }
@@ -737,6 +835,140 @@
       this.socket!.send( JSON.stringify( command ) );
     }
 
+    // An empty field means no limit. It cannot be written back, as eebus-go
+    // would encode +Inf as a large negative number.
+    public isUnlimited( value: number | string | null | undefined ) {
+      return value === null || value === undefined || value === "";
+    }
+
+    public unlimitedHint( value: number | string | null | undefined ) {
+      return this.isUnlimited( value ) ? "Enter a value to set a limit" : "";
+    }
+
+    private setReportedLimit( message: Message ) {
+      if ( ! this.reportedLimits[message.SKI] )
+        this.reportedLimits[message.SKI] = {};
+
+      this.reportedLimits[message.SKI][message.UseCase!] = {
+        IsActive: message.Limit?.IsActive ?? false,
+        Value:    message.Unlimited ? null : message.Limit?.Value ?? 0
+      };
+    }
+
+    public saveSettings() {
+      try {
+        localStorage.setItem( settingsKey, JSON.stringify( {
+          installedPv: this.installedPv,
+          ledRules:    this.ledRules
+        } as Settings ) );
+      }
+      catch {
+        // settings are a convenience only
+      }
+    }
+
+    public get hasInstalledPv(): boolean {
+      return 0 < Number( this.installedPv[this.selectedSki] );
+    }
+
+    // Allowed feed-in in % of installed PV power as confirmed by the device,
+    // 100 if not limited, undefined if unknown.
+    public get reportedFeedIn(): number | undefined {
+      var limit = this.reportedLimits[this.selectedSki]?.['LPP'];
+      if ( ! limit )
+        return undefined;
+      if ( ! limit.IsActive || null === limit.Value )
+        return 100;
+      if ( ! this.hasInstalledPv )
+        return undefined;
+
+      // devices like the Weidmueller ERC report feed-in limits as negative values
+      return Math.min( 100, 100 * Math.abs( limit.Value ) / Number( this.installedPv[this.selectedSki] ) );
+    }
+
+    public isFeedInStep( pct: number ): boolean {
+      var feedIn = this.reportedFeedIn;
+      return undefined !== feedIn && Math.abs( feedIn - pct ) < 0.5;
+    }
+
+    public feedInHint( pct: number ): string {
+      if ( 100 <= pct )
+        return "Deactivate the feed-in limit";
+
+      return "Limit feed-in to " + this.formatted( Math.round( Number( this.installedPv[this.selectedSki] ) * pct / 100 ) ) + " W";
+    }
+
+    // Fills Active and Dimmed Value and sends the limit like the Set button.
+    public setFeedIn( pct: number ) {
+      if ( ! this.hasInstalledPv )
+        return;
+
+      var installed = Number( this.installedPv[this.selectedSki] );
+      var ls = this.limits[this.selectedSki]['LPP'];
+
+      // 100 % means no limitation: deactivate instead of limiting to full power
+      ls.IsActive = pct < 100;
+      // feed-in limits are negative, as also reported back by the device
+      ls.Value    = -Math.round( installed * pct / 100 ) || 0;
+
+      this.setProductionLimit();
+    }
+
+    // §14a EnWG minimum power a controllable consumer must still be allowed
+    public readonly consumptionLimitValue = 4200;
+
+    public isConsumptionLimited( active: boolean ): boolean {
+      var limit = this.reportedLimits[this.selectedSki]?.['LPC'];
+      if ( ! limit )
+        return false;
+
+      return active ? limit.IsActive && limit.Value == this.consumptionLimitValue : ! limit.IsActive;
+    }
+
+    // Fills Active and Dimmed Value and sends the limit like the Set button.
+    public setConsumption( active: boolean ) {
+      var ls = this.limits[this.selectedSki]['LPC'];
+
+      ls.IsActive = active;
+      ls.Value    = this.consumptionLimitValue;
+
+      this.setConsumptionLimit();
+    }
+
+    public ledState( rule: LedRule ): 'on' | 'off' | 'unknown' {
+      if ( 'LPC' == rule.Source ) {
+        var limit = this.reportedLimits[this.selectedSki]?.['LPC'];
+        if ( ! limit )
+          return 'unknown';
+        return limit.IsActive ? 'on' : 'off';
+      }
+
+      if ( 'LPP' == rule.Source ) {
+        var feedIn = this.reportedFeedIn;
+        if ( undefined === feedIn )
+          return 'unknown';
+        if ( 100 <= feedIn )
+          return 'off';
+
+        // the output for the highest step not exceeding the allowed feed-in
+        var steps = this.ledRules.filter( r => 'LPP' == r.Source ).map( r => r.Step );
+        var allowed = steps.filter( step => step <= feedIn! + 0.5 );
+        var step = allowed.length ? Math.max( ...allowed ) : Math.min( ...steps );
+
+        return rule.Step == step ? 'on' : 'off';
+      }
+
+      return 'off';
+    }
+
+    public ledHint( rule: LedRule ): string {
+      switch ( rule.Source ) {
+        case 'LPC': return rule.Name + ": consumption limit active";
+        case 'LPP': return rule.Name + ": feed-in limited to " + rule.Step + " %" + ( this.hasInstalledPv ? "" : " (enter installed PV power)" );
+        default:    return rule.Name + ": not used";
+      }
+    }
+
     public onLPCUserChanged() {
       this.lpcUserChanged = true;
     }
@@ -765,7 +997,7 @@
       if ( ! this.socket )
         return;
       
-      this.sendValue( MessageType.SetConsumptionFailsafeValue, this.limits[this.selectedSki]['LPC'].FSValue );
+      this.sendValue( MessageType.SetConsumptionFailsafeValue, this.limits[this.selectedSki]['LPC'].FSValue! );
       this.lpcUserChanged = false;
     }
 
@@ -781,7 +1013,7 @@
       if ( ! this.socket )
         return;
       
-      this.sendValue( MessageType.SetProductionFailsafeValue, this.limits[this.selectedSki]['LPP'].FSValue );
+      this.sendValue( MessageType.SetProductionFailsafeValue, this.limits[this.selectedSki]['LPP'].FSValue! );
       this.lppUserChanged = false;
     }
 
@@ -930,6 +1162,76 @@
     to {
       color: rgb(0,0,0);
     }
+  }
+
+  .quick-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 6px;
+    margin-bottom: 12px;
+  }
+  .quick-buttons button {
+    white-space: nowrap;
+    padding: 0.3em 0.9em;
+  }
+  .quick-buttons button:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  .hint {
+    color: rgb(191,96,0);
+    font-size: 0.85em;
+    align-self: center;
+  }
+  .form-line3 input.missing {
+    border: 2px solid rgb(191,96,0);
+  }
+  .quick-buttons button.selected {
+    border-color: rgb(0,191,0);
+    box-shadow: 0 0 4px rgb(0,191,0);
+  }
+
+  .outputs {
+    text-align: left;
+  }
+  .leds {
+    display: flex;
+    gap: 24px;
+  }
+  .led-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .led {
+    display: inline-block;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    border: 1px solid #555;
+    background: rgb(40,40,40);
+  }
+  .led.on {
+    background: rgb(0,255,0);
+    box-shadow: 0 0 8px rgb(0,255,0);
+  }
+  .led.unknown {
+    background: transparent;
+    border-style: dashed;
+  }
+  .led-config {
+    margin-top: 10px;
+  }
+  .led-config-grid {
+    display: grid;
+    grid-template-columns: 40px max-content max-content;
+    gap: 6px 10px;
+    align-items: center;
+    margin-top: 6px;
+  }
+  .led-config-grid input {
+    width: 60px;
   }
 
   .devices {

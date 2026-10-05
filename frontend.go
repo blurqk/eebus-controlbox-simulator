@@ -84,6 +84,7 @@ type Message struct {
 	Text         string
 	Limit        ucapi.LoadLimit
 	Value        float64
+	Unlimited    bool // Value or Limit.Value is +Inf, i.e. no limit
 	Values       []float64
 	ServiceList  []shipapi.RemoteMdnsService
 	EntityInfos  []EntityInfo

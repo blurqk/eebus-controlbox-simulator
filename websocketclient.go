@@ -49,7 +49,8 @@ func (websocketClient *WebsocketClient) sendMessage(msg interface{}) error {
 }
 
 // finite replaces values JSON cannot encode. Devices like the Weidmueller ERC
-// report "no limit" as +Inf, which is shown as 0 in the frontend.
+// report "no limit" as +Inf, which is signaled to the frontend via
+// Message.Unlimited instead.
 func finite(value float64) float64 {
 	if math.IsInf(value, 0) || math.IsNaN(value) {
 		return 0
@@ -76,10 +77,11 @@ func (websocketClient *WebsocketClient) sendText(messageType int, text string) e
 
 func (websocketClient *WebsocketClient) sendValue(ski string, messageType int, useCase string, value float64) error {
 	answer := Message{
-		SKI:     ski,
-		Type:    messageType,
-		Value:   finite(value),
-		UseCase: useCase}
+		SKI:       ski,
+		Type:      messageType,
+		Value:     finite(value),
+		Unlimited: math.IsInf(value, 1),
+		UseCase:   useCase}
 
 	return websocketClient.sendMessage(answer)
 }
@@ -100,13 +102,15 @@ func (websocketClient *WebsocketClient) sendValueArr(ski string, messageType int
 }
 
 func (websocketClient *WebsocketClient) sendLimit(ski string, messageType int, useCase string, limit ucapi.LoadLimit) error {
+	unlimited := math.IsInf(limit.Value, 1)
 	limit.Value = finite(limit.Value)
 
 	answer := Message{
-		SKI:     ski,
-		Type:    messageType,
-		Limit:   limit,
-		UseCase: useCase}
+		SKI:       ski,
+		Type:      messageType,
+		Limit:     limit,
+		Unlimited: unlimited,
+		UseCase:   useCase}
 
 	return websocketClient.sendMessage(answer)
 }
