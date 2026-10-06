@@ -256,10 +256,17 @@ func (h *controlbox) run() {
 		// The announcer must already trust the target before announcing.
 		h.myService.RegisterRemoteService(shipapi.NewServiceIdentity(
 			pairingTarget.SKI, pairingTarget.Fingerprint, pairingTarget.ShipID))
-		if err := h.myService.StartAnnouncementTo(*pairingTarget); err != nil {
-			log.Fatal("SHIP pairing announcement failed: ", err)
+		// PAIRING_ANNOUNCE=0: only connect to an already paired device, without
+		// announcing. A stale announcement would let the device pair us again
+		// when it looks for a replacement control box.
+		if os.Getenv("PAIRING_ANNOUNCE") == "0" {
+			fmt.Println("SHIP pairing: connecting to " + pairingTarget.ShipID + " without announcement")
+		} else {
+			if err := h.myService.StartAnnouncementTo(*pairingTarget); err != nil {
+				log.Fatal("SHIP pairing announcement failed: ", err)
+			}
+			fmt.Println("SHIP pairing: announcing to " + pairingTarget.ShipID + " (SKI " + pairingTarget.SKI + ")")
 		}
-		fmt.Println("SHIP pairing: announcing to " + pairingTarget.ShipID + " (SKI " + pairingTarget.SKI + ")")
 	}
 }
 

@@ -46,6 +46,9 @@ func main() {
 
 	go func() {
 		<-sig
+		// close SHIP connections properly so remote devices see a regular
+		// disconnect (e.g. the ERC starts its pairing replacement timer)
+		srv.myService.Shutdown()
 		os.Exit(0)
 	}()
 
