@@ -252,6 +252,11 @@ func (h *controlbox) run() {
 		log.Fatal(err)
 	}
 
+	// Answer smgw.local and the ERC's NTP-over-TLS time request (see timeservice.go).
+	if os.Getenv("SMGW_TIME") != "0" {
+		startTimeService(certificate)
+	}
+
 	if pairingTarget != nil {
 		// The announcer must already trust the target before announcing.
 		h.myService.RegisterRemoteService(shipapi.NewServiceIdentity(

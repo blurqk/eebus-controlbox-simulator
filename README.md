@@ -15,18 +15,22 @@ It works with devices that trust the ControlBox SKI directly (e.g. evcc) as well
 - **Quick buttons:** set the consumption limit (`Limit` = 4200 W, `No Limit`) and the allowed feed-in (`0 %`, `30 %`, `60 %`, `100 %` of the installed PV power) with one click
 - **Output LEDs:** show which outputs (e.g. the ERC's S1, S2, W3, W4) should be active, based on the limits confirmed by the device, so the device's behavior can be compared directly
 - **Unlimited values:** limits reported as unlimited (`+Inf`) by a device are shown as empty fields with the placeholder *unlimited*
+- **Time service for the ERC:** answers `smgw.local` and the ERC's time request, so its clock and log show the real time instead of 1970
 - **Diagnostics:** optional debug logging and a log of the entities and use cases a remote device announces
 
 ### Installation & Execution
 
 #### ControlBox
 
-Run ControlBox:
+Start ControlBox, frontend and ERC time service with one command:
 ```
 cd /path/to/controlbox
-go run . 4712
+./start.sh            # SHIP port 4712; ./start.sh <port> for another one
 2025-04-10 16:39:14 INFO  Local SKI: A46D9C217B8F335E921C4FAA087E615C9D2A73F0
+Frontend: http://localhost:7080/
 ```
+
+`start.sh` builds the frontend (`npm install`, `npm run build`) when it is missing or its sources changed, then runs `go run . 4712`. ControlBox serves the built frontend itself on port 7080, so no separate web server is needed. Requires Go and Node.js.
 
 Note the local SKI which is logged on ControlBox startup. Certificate and key are automatically created and saved.
 
@@ -39,6 +43,8 @@ ControlBox is configured via environment variables or a `.env` file in the worki
 | `CERT_PEM`, `KEY_PEM` | Certificate and private key as inline PEM. Generated and saved to `.env` on first run if absent. |
 | `PAIRING_QR` | Content of a device's SHIP Pairing QR code (`SHIP;SKI:…;ID:…;FPH256:…;SPSEC:…;ENDSHIP;`). ControlBox then announces itself to this device via the SHIP Pairing Service. |
 | `MDNS_ZEROCONF` | Set to any value to use the native Go zeroconf implementation instead of avahi for mDNS. Required for devices avahi fails to resolve, such as the Weidmüller ERC. |
+| `SMGW_TIME` | Time service for the Weidmüller ERC (see below), on by default. `0` switches it off. |
+| `SMGW_IP` | IPv4 address announced for `smgw.local`. Default: the address of the interface the query arrived on. |
 | `EEBUS_DEBUG` | Set to any value to enable debug logging (SHIP handshake, SPINE messages). |
 
 `.env` contains the private key and possibly the pairing secret. Do not commit it.
@@ -70,22 +76,24 @@ Devices like the Weidmüller EEBUS Relais Converter do not allow entering a trus
 
 Some devices only accept pairing for a limited time after power-up, and only trust one control box at a time.
 
+#### Time for the Weidmüller ERC
+
+The ERC gets its clock from the PPC smart meter gateway it was designed for, not from the internet. At boot it looks up `smgw.local` via mDNS, opens a TLS 1.2 connection to TCP port 4460 and sends a plain 48 byte NTP client packet inside it. It does not verify the server certificate. Without an answer it logs `PPCCLS_TIMESYNC_CONNECT: could not connect to peer` and its clock starts at 1970.
+
+ControlBox answers both the mDNS query and the time request with the host's clock (UTC). The ERC asks only once per boot, so restart it after starting ControlBox. Only one device should answer `smgw.local`: run either this simulator or the Tasmota one, not both (`SMGW_TIME=0` here or `EEBusSmgw 0` on the Tasmota). Binding port 4460 and sharing mDNS port 5353 needs no root rights. The ERC must be able to reach TCP port 4460 on the ControlBox host.
+
 #### ControlBox Frontend
 
-Install dependencies:
+`start.sh` builds the frontend and ControlBox serves it. Open the UI at:
+```
+http://localhost:7080/
+```
+
+For frontend development, the Vite dev server with hot reload still works (UI at `http://localhost:7081/`):
 ```
 cd /path/to/controlbox/frontend
 npm install
-```
-
-Run web server:
-```
 npm run dev
-```
-
-Open ControlBox UI via web browser URI:
-```
-http://localhost:7081/
 ```
 
 <p align="center"><img width="795" height="866" alt="image" src="https://github.com/user-attachments/assets/dc1fb9ff-2b89-4738-9e94-0a7d1f43111c" /></p>

@@ -16,7 +16,8 @@ import (
 // web frontend
 
 const (
-	httpdPort int = 7080
+	httpdPort   int = 7080
+	frontendDir     = "frontend/dist"
 )
 
 const (
