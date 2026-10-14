@@ -115,6 +115,20 @@ func (websocketClient *WebsocketClient) sendLimit(ski string, messageType int, u
 	return websocketClient.sendMessage(answer)
 }
 
+func (websocketClient *WebsocketClient) sendDeviceStatus(devices []DeviceStatus) error {
+	return websocketClient.sendMessage(Message{
+		Type:    DeviceStatusList,
+		Devices: devices})
+}
+
+func (websocketClient *WebsocketClient) sendNotice(ski string, text string, isError bool) error {
+	return websocketClient.sendMessage(Message{
+		SKI:   ski,
+		Type:  Notice,
+		Text:  text,
+		Error: isError})
+}
+
 func (websocketClient *WebsocketClient) sendServiceList(messageType int, services []shipapi.RemoteMdnsService) error {
 	answer := Message{
 		Type:        messageType,

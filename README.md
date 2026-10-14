@@ -12,9 +12,12 @@ It works with devices that trust the ControlBox SKI directly (e.g. evcc) as well
 ### Features
 
 - **SHIP Pairing Service:** pair with devices that do not allow entering a trusted SKI, using the content of the device's pairing QR code
+- **Pages and targets:** Control, Connection and Settings pages; commands go to all connected devices or one, only to devices supporting the use case
 - **Quick buttons:** set the consumption limit (`Limit` = 4200 W, `No Limit`) and the allowed feed-in (`0 %`, `30 %`, `60 %`, `100 %` of the installed PV power) with one click
-- **Output LEDs:** show which outputs (e.g. the ERC's S1, S2, W3, W4) should be active, based on the limits confirmed by the device, so the device's behavior can be compared directly
-- **Unlimited values:** limits reported as unlimited (`+Inf`) by a device are shown as empty fields with the placeholder *unlimited*
+- **Status and messages:** confirmed limits and output LEDs per device; answers of the devices with their origin
+- **Colour scheme:** 16 colours each for the scheme and for highlighting confirmed quick buttons
+- **Output LEDs:** show which outputs (e.g. the ERC's S1, S2, W3, W4) should be active, based on the limits confirmed by each device, so the device's behavior can be compared directly
+- **Unlimited values:** limits reported as unlimited (`+Inf`) by a device are shown as *not limited* or *unlimited*
 - **Time service for the ERC:** answers `smgw.local` and the ERC's time request, so its clock and log show the real time instead of 1970
 - **Diagnostics:** optional debug logging and a log of the entities and use cases a remote device announces
 
@@ -96,20 +99,26 @@ npm install
 npm run dev
 ```
 
-<p align="center"><img width="795" height="866" alt="image" src="https://github.com/user-attachments/assets/dc1fb9ff-2b89-4738-9e94-0a7d1f43111c" /></p>
+The UI has three pages, selected in the title bar (the page is kept in the address, e.g. `#settings`):
 
-**Quick buttons:** below the *Consumption Limit* and *Production Limit* headings. Each button fills *Active* and *Dimmed Value* and sends the limit immediately, using the *Dimmed Duration* from the form.
+- **Control:** the *Target* is either *All connected devices* or one device. Every command goes to each device in the target that supports the use case. Consumption (§ 14a EnWG, LPC) and feed-in (§ 9 EEG, LPP) sit side by side, each with quick buttons, limit and duration (default 600 s, 0 = unlimited), *Set limit* and *Release*. Below, *Status* shows per device the limits it confirmed and its output LEDs.
+- **Connection:** own identity (QR code and pairing text), the devices found via mDNS with their details, structure (actors, use cases, entities, features) and measurements (MGCP, MPC). Selecting a device that is not connected makes ControlBox connect to it; for an energy manager (HEMS), which connects on its own, ControlBox asks first.
+- **Settings:** installed PV power, failsafe values (table of all devices, written to the Control target), colour scheme and highlighting colour, and the output assignment.
 
-| Button | Active | Dimmed Value |
-|---|---|---|
-| `Limit` | yes | 4200 W |
-| `No Limit` | no | 4200 W |
-| `0 %` / `30 %` / `60 %` | yes | −(installed PV power × %) |
-| `100 %` | no | −(installed PV power) |
+*Messages* at the bottom of every page lists the devices' answers (accepted, rejected with error code) with the device they came from; the bin button clears them.
 
-The feed-in buttons require the *Installed PV Power [Wp]* field in the *Production Limit* panel. Feed-in limits are sent as negative values, as the ERC expects and reports them. The button matching the limit confirmed by the device is highlighted.
+**Quick buttons:** each fills the form and sends the limit immediately. A button is framed in the highlighting colour when every device in the target confirmed that state.
 
-**Output LEDs:** the *ERC Outputs* section shows four LEDs with these defaults:
+| Button | Sends |
+|---|---|
+| `Limit · 4,200 W` | consumption limit 4200 W, active |
+| `No Limit` | consumption limit released |
+| `0 %` / `30 %` / `60 %` | feed-in limit −(installed PV power × %), active |
+| `100 %` | feed-in limit released |
+
+Feed-in limits and failsafe values are entered as amounts and sent as negative values, as the ERC expects and reports them. The % buttons need the installed PV power (*Settings → Installation*).
+
+**Output LEDs:** the *Status* table shows four LEDs per device with these defaults:
 
 | LED | Lit when |
 |---|---|
@@ -118,9 +127,9 @@ The feed-in buttons require the *Installed PV Power [Wp]* field in the *Producti
 | W3 | feed-in limited to 0 % |
 | W4 | consumption limit active |
 
-For feed-in limits between steps, the highest step not exceeding the allowed feed-in is lit (e.g. 45 % lights S2). The rules can be changed under *Configure outputs*. The LEDs follow the limits confirmed by the device, not the values in the form. Failsafe states are not shown.
+For feed-in limits between steps, the highest step not exceeding the allowed feed-in is lit (e.g. 45 % lights S2). The rules can be changed under *Settings → Output Assignment*. The LEDs follow the limits confirmed by the device, not the values in the form. Failsafe states are not shown.
 
-Installed PV power and LED rules are stored in the browser.
+Installed PV power, target, form values, colours and LED rules are stored in the browser.
 
 ### Credits
 

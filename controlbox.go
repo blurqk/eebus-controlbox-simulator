@@ -283,6 +283,7 @@ func (h *controlbox) RemoteServiceConnected(service api.ServiceInterface, identi
 	h.isConnected[identity.SKI] = true
 
 	frontend.sendText(SelectService, identity.SKI)
+	frontend.sendDeviceStatus(h.deviceStatus())
 }
 
 func (h *controlbox) RemoteServiceDisconnected(service api.ServiceInterface, identity shipapi.ServiceIdentity) {
@@ -290,6 +291,7 @@ func (h *controlbox) RemoteServiceDisconnected(service api.ServiceInterface, ide
 	h.isConnected[identity.SKI] = false
 
 	frontend.sendNotification("", ServiceListChanged, "")
+	frontend.sendDeviceStatus(h.deviceStatus())
 }
 
 func (h *controlbox) VisibleRemoteMdnsServicesUpdated(service api.ServiceInterface, entries []shipapi.RemoteMdnsService) {
@@ -336,6 +338,32 @@ func (h *controlbox) ServiceAutoTrustRemoved(service api.ServiceInterface, ident
 	fmt.Println("ServiceAutoTrustRemoved: " + identity.ShipID + ": " + reason)
 }
 
+// deviceStatus lists the connected devices with the use cases they support,
+// so the frontend can offer them as targets and show their state side by side.
+func (h *controlbox) deviceStatus() []DeviceStatus {
+	list := []DeviceStatus{}
+	for ski, connected := range h.isConnected {
+		if !connected {
+			continue
+		}
+		status := DeviceStatus{SKI: ski, Connected: true, UseCases: h.remoteInfos[ski].UseCases}
+		if indx := slices.IndexFunc(h.currentRemoteServices, func(v shipapi.RemoteMdnsService) bool { return strings.EqualFold(v.Ski, ski) }); indx >= 0 {
+			service := h.currentRemoteServices[indx]
+			status.Brand, status.Model, status.Type, status.ShipID = service.Brand, service.Model, service.Type, service.ShipID
+		}
+		list = append(list, status)
+	}
+	slices.SortFunc(list, func(a, b DeviceStatus) int { return strings.Compare(a.SKI, b.SKI) })
+	return list
+}
+
+func resultDescription(msg model.ResultDataType) string {
+	if msg.Description == nil {
+		return ""
+	}
+	return string(*msg.Description)
+}
+
 func (h *controlbox) updateEntityInfos(ski string, device spineapi.DeviceRemoteInterface, uc string) {
 	info, exists := h.remoteInfos[ski]
 	if !exists {
@@ -380,16 +408,20 @@ func (h *controlbox) updateUseCaseInfos(ski string, device spineapi.DeviceRemote
 // LPC Event Handler
 
 func (h *controlbox) sendConsumptionLimit(entity spineapi.EntityRemoteInterface) {
+	ski := entity.Device().Ski()
 	resultCB := func(msg model.ResultDataType, msgCounter model.MsgCounterType) {
 		if *msg.ErrorNumber == model.ErrorNumberTypeNoError {
 			fmt.Println("Consumption limit accepted.")
+			frontend.sendNotice(ski, "Consumption limit accepted", false)
 		} else {
 			fmt.Println("Consumption limit rejected. Code", *msg.ErrorNumber, "Description", *msg.Description)
+			frontend.sendNotice(ski, fmt.Sprintf("Consumption limit rejected (code %d: %s)", *msg.ErrorNumber, resultDescription(msg)), true)
 		}
 	}
 	msgCounter, err := h.uclpc.WriteConsumptionLimit(entity, h.consumptionLimits, resultCB)
 	if err != nil {
 		fmt.Println("Failed to send consumption limit", err)
+		frontend.sendNotice(ski, "Consumption limit not sent: "+err.Error(), true)
 		return
 	}
 	fmt.Println("Sent consumption limit to", entity.Device().Ski(), "with msgCounter", msgCounter)
@@ -399,18 +431,22 @@ func (h *controlbox) sendConsumptionFailsafeLimit(entity spineapi.EntityRemoteIn
 	msgCounter, err := h.uclpc.WriteFailsafeConsumptionActivePowerLimit(entity, h.consumptionFailsafeLimits.Value)
 	if err != nil {
 		fmt.Println("Failed to send consumption failsafe limit", err)
+		frontend.sendNotice(entity.Device().Ski(), "Consumption failsafe limit not sent: "+err.Error(), true)
 		return
 	}
 	fmt.Println("Sent consumption failsafe limit to", entity.Device().Ski(), "with msgCounter", msgCounter)
+	frontend.sendNotice(entity.Device().Ski(), "Consumption failsafe limit sent", false)
 }
 
 func (h *controlbox) sendConsumptionFailsafeDuration(entity spineapi.EntityRemoteInterface) {
 	msgCounter, err := h.uclpc.WriteFailsafeDurationMinimum(entity, h.consumptionFailsafeLimits.Duration)
 	if err != nil {
 		fmt.Println("Failed to send consumption failsafe duration", err)
+		frontend.sendNotice(entity.Device().Ski(), "Consumption failsafe duration not sent: "+err.Error(), true)
 		return
 	}
 	fmt.Println("Sent consumption failsafe duration to", entity.Device().Ski(), "with msgCounter", msgCounter)
+	frontend.sendNotice(entity.Device().Ski(), "Consumption failsafe duration sent", false)
 }
 
 func (h *controlbox) readConsumptionNominalMax(entity spineapi.EntityRemoteInterface) {
@@ -443,6 +479,7 @@ func (h *controlbox) OnLPCEvent(ski string, device spineapi.DeviceRemoteInterfac
 	frontend.sendEntityInfo(GetEntityInfos, h.remoteInfos)
 	h.updateUseCaseInfos(ski, device)
 	frontend.sendUseCaseInfo(GetUseCaseInfos, h.useCaseInfos)
+	frontend.sendDeviceStatus(h.deviceStatus())
 
 	switch event {
 	case lpc.UseCaseSupportUpdate:
@@ -450,7 +487,7 @@ func (h *controlbox) OnLPCEvent(ski string, device spineapi.DeviceRemoteInterfac
 
 	case lpc.DataUpdateLimit:
 		if currentLimit, err := h.uclpc.ConsumptionLimit(entity); err == nil {
-			if ski == remoteSki {
+			{ // every device: the frontend keeps data per SKI
 				fmt.Println("Event lpc.DataUpdateLimit", ski, currentLimit.Value)
 
 				h.consumptionLimits = currentLimit
@@ -468,7 +505,7 @@ func (h *controlbox) OnLPCEvent(ski string, device spineapi.DeviceRemoteInterfac
 		}
 	case lpc.DataUpdateFailsafeConsumptionActivePowerLimit:
 		if limit, err := h.uclpc.FailsafeConsumptionActivePowerLimit(entity); err == nil {
-			if ski == remoteSki {
+			{ // every device: the frontend keeps data per SKI
 				fmt.Println("Event lpc.DataUpdateFailsafeConsumptionActivePowerLimit", ski, limit)
 
 				h.consumptionFailsafeLimits.Value = limit
@@ -478,7 +515,7 @@ func (h *controlbox) OnLPCEvent(ski string, device spineapi.DeviceRemoteInterfac
 		}
 	case lpc.DataUpdateFailsafeDurationMinimum:
 		if duration, err := h.uclpc.FailsafeDurationMinimum(entity); err == nil {
-			if ski == remoteSki {
+			{ // every device: the frontend keeps data per SKI
 				fmt.Println("Event lpc.DataUpdateFailsafeDurationMinimum", ski, duration)
 
 				h.consumptionFailsafeLimits.Duration = duration
@@ -500,16 +537,20 @@ func (h *controlbox) OnLPCEvent(ski string, device spineapi.DeviceRemoteInterfac
 // LPP Event Handler
 
 func (h *controlbox) sendProductionLimit(entity spineapi.EntityRemoteInterface) {
+	ski := entity.Device().Ski()
 	resultCB := func(msg model.ResultDataType, msgCounter model.MsgCounterType) {
 		if *msg.ErrorNumber == model.ErrorNumberTypeNoError {
 			fmt.Println("Production limit accepted.")
+			frontend.sendNotice(ski, "Production limit accepted", false)
 		} else {
 			fmt.Println("Production limit rejected. Code", *msg.ErrorNumber, "Description", *msg.Description)
+			frontend.sendNotice(ski, fmt.Sprintf("Production limit rejected (code %d: %s)", *msg.ErrorNumber, resultDescription(msg)), true)
 		}
 	}
 	msgCounter, err := h.uclpp.WriteProductionLimit(entity, h.productionLimits, resultCB)
 	if err != nil {
 		fmt.Println("Failed to send production limit", err)
+		frontend.sendNotice(ski, "Production limit not sent: "+err.Error(), true)
 		return
 	}
 	fmt.Println("Sent production limit to", entity.Device().Ski(), "with msgCounter", msgCounter)
@@ -519,18 +560,22 @@ func (h *controlbox) sendProductionFailsafeLimit(entity spineapi.EntityRemoteInt
 	msgCounter, err := h.uclpp.WriteFailsafeProductionActivePowerLimit(entity, h.productionFailsafeLimits.Value)
 	if err != nil {
 		fmt.Println("Failed to send production failsafe limit", err)
+		frontend.sendNotice(entity.Device().Ski(), "Production failsafe limit not sent: "+err.Error(), true)
 		return
 	}
 	fmt.Println("Sent production failsafe limit to", entity.Device().Ski(), "with msgCounter", msgCounter)
+	frontend.sendNotice(entity.Device().Ski(), "Production failsafe limit sent", false)
 }
 
 func (h *controlbox) sendProductionFailsafeDuration(entity spineapi.EntityRemoteInterface) {
 	msgCounter, err := h.uclpp.WriteFailsafeDurationMinimum(entity, h.productionFailsafeLimits.Duration)
 	if err != nil {
 		fmt.Println("Failed to send production failsafe duration", err)
+		frontend.sendNotice(entity.Device().Ski(), "Production failsafe duration not sent: "+err.Error(), true)
 		return
 	}
 	fmt.Println("Sent production failsafe duration to", entity.Device().Ski(), "with msgCounter", msgCounter)
+	frontend.sendNotice(entity.Device().Ski(), "Production failsafe duration sent", false)
 }
 
 func (h *controlbox) readProductionNominalMax(entity spineapi.EntityRemoteInterface) {
@@ -563,6 +608,7 @@ func (h *controlbox) OnLPPEvent(ski string, device spineapi.DeviceRemoteInterfac
 	frontend.sendEntityInfo(GetEntityInfos, h.remoteInfos)
 	h.updateUseCaseInfos(ski, device)
 	frontend.sendUseCaseInfo(GetUseCaseInfos, h.useCaseInfos)
+	frontend.sendDeviceStatus(h.deviceStatus())
 
 	switch event {
 	case lpp.UseCaseSupportUpdate:
@@ -570,7 +616,7 @@ func (h *controlbox) OnLPPEvent(ski string, device spineapi.DeviceRemoteInterfac
 
 	case lpp.DataUpdateLimit:
 		if currentLimit, err := h.uclpp.ProductionLimit(entity); err == nil {
-			if ski == remoteSki {
+			{ // every device: the frontend keeps data per SKI
 				fmt.Println("Event lpp.DataUpdateLimit", ski, currentLimit.Value)
 
 				h.productionLimits = currentLimit
@@ -589,7 +635,7 @@ func (h *controlbox) OnLPPEvent(ski string, device spineapi.DeviceRemoteInterfac
 		}
 	case lpp.DataUpdateFailsafeProductionActivePowerLimit:
 		if limit, err := h.uclpp.FailsafeProductionActivePowerLimit(entity); err == nil {
-			if ski == remoteSki {
+			{ // every device: the frontend keeps data per SKI
 				fmt.Println("Event lpp.DataUpdateFailsafeProductionActivePowerLimit", ski, limit)
 
 				h.productionFailsafeLimits.Value = limit
@@ -599,7 +645,7 @@ func (h *controlbox) OnLPPEvent(ski string, device spineapi.DeviceRemoteInterfac
 		}
 	case lpp.DataUpdateFailsafeDurationMinimum:
 		if duration, err := h.uclpp.FailsafeDurationMinimum(entity); err == nil {
-			if ski == remoteSki {
+			{ // every device: the frontend keeps data per SKI
 				fmt.Println("Event lpp.DataUpdateFailsafeDurationMinimum", ski, duration)
 
 				h.productionFailsafeLimits.Duration = duration
@@ -637,6 +683,7 @@ func (h *controlbox) OnMGCPEvent(ski string, device spineapi.DeviceRemoteInterfa
 	frontend.sendEntityInfo(GetEntityInfos, h.remoteInfos)
 	h.updateUseCaseInfos(ski, device)
 	frontend.sendUseCaseInfo(GetUseCaseInfos, h.useCaseInfos)
+	frontend.sendDeviceStatus(h.deviceStatus())
 
 	switch event {
 	case mgcp.UseCaseSupportUpdate:
@@ -692,6 +739,7 @@ func (h *controlbox) OnMPCEvent(ski string, device spineapi.DeviceRemoteInterfac
 	frontend.sendEntityInfo(GetEntityInfos, h.remoteInfos)
 	h.updateUseCaseInfos(ski, device)
 	frontend.sendUseCaseInfo(GetUseCaseInfos, h.useCaseInfos)
+	frontend.sendDeviceStatus(h.deviceStatus())
 
 	switch event {
 	case mpc.UseCaseSupportUpdate:

@@ -5,8 +5,10 @@ import (
 	"log"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
+	eebusapi "github.com/enbility/eebus-go/api"
 	ucapi "github.com/enbility/eebus-go/usecases/api"
 	shipapi "github.com/enbility/ship-go/api"
 	spineapi "github.com/enbility/spine-go/api"
@@ -58,7 +60,12 @@ const (
 	GetCurrentPerPhase             = 34
 	GetVoltagePerPhase             = 35
 	GetFrequency                   = 36
+	DeviceStatusList               = 37 // connected devices and their use cases
+	Notice                         = 38 // result of a write, shown under Messages
 )
+
+// allDevices as target sends a command to every connected device supporting the use case.
+const allDevices = "all"
 
 type RemoteInfo struct {
 	Service  shipapi.RemoteMdnsService
@@ -69,6 +76,16 @@ type RemoteInfo struct {
 type UseCaseInfo struct {
 	Actor string
 	Names []string
+}
+
+type DeviceStatus struct {
+	SKI       string
+	Connected bool
+	UseCases  []string
+	Brand     string
+	Model     string
+	Type      string
+	ShipID    string
 }
 
 type EntityInfo struct {
@@ -91,6 +108,32 @@ type Message struct {
 	EntityInfos  []EntityInfo
 	UseCaseInfos map[string][]UseCaseInfo
 	UseCase      string
+	Devices      []DeviceStatus
+	Error        bool
+}
+
+// isTarget reports whether a command addressed to target (a SKI, or "" / "all"
+// for every connected device) applies to the device of entity.
+func isTarget(target string, entity spineapi.EntityRemoteInterface) bool {
+	if target == "" || target == allDevices {
+		return true
+	}
+	return entity.Device() != nil && strings.EqualFold(entity.Device().Ski(), target)
+}
+
+// forTargets runs send for every remote entity of a use case that is addressed
+// by target and reports in the frontend if no device was addressed.
+func forTargets(target, uc string, entities []eebusapi.RemoteEntityScenarios, send func(spineapi.EntityRemoteInterface)) {
+	sent := 0
+	for _, scenario := range entities {
+		if isTarget(target, scenario.Entity) {
+			send(scenario.Entity)
+			sent++
+		}
+	}
+	if sent == 0 {
+		frontend.sendNotice(target, "No connected device supports "+uc, true)
+	}
 }
 
 func readData(h *controlbox, entity spineapi.EntityRemoteInterface, ucs []string) {
@@ -216,6 +259,16 @@ func serveWs(h *controlbox, w http.ResponseWriter, r *http.Request) {
 
 	sendData(h, "", "")
 
+	// state of every connected device for the control target and status table
+	frontend.sendDeviceStatus(h.deviceStatus())
+	for ski, connected := range h.isConnected {
+		if info, exists := h.remoteInfos[ski]; connected && exists && info.Device != nil {
+			for _, entity := range info.Device.Entities() {
+				readData(h, entity, nil)
+			}
+		}
+	}
+
 	if err := reader(h, ws); err != nil {
 		log.Println(err)
 	}
@@ -263,6 +316,8 @@ func reader(h *controlbox, ws *websocket.Conn) error {
 			}
 		case GetAllData:
 			sendData(h, data.SKI, data.Text)
+		case DeviceStatusList:
+			frontend.sendDeviceStatus(h.deviceStatus())
 		case SetConsumptionLimit:
 			var limit = data.Limit
 
@@ -270,9 +325,7 @@ func reader(h *controlbox, ws *websocket.Conn) error {
 			h.consumptionLimits.Value = limit.Value
 			h.consumptionLimits.Duration = limit.Duration * time.Second
 
-			for _, remoteEntityScenario := range h.uclpc.RemoteEntitiesScenarios() {
-				h.sendConsumptionLimit(remoteEntityScenario.Entity)
-			}
+			forTargets(data.SKI, "LPC", h.uclpc.RemoteEntitiesScenarios(), h.sendConsumptionLimit)
 		case SetProductionLimit:
 			var limit = data.Limit
 
@@ -280,41 +333,31 @@ func reader(h *controlbox, ws *websocket.Conn) error {
 			h.productionLimits.Value = limit.Value
 			h.productionLimits.Duration = limit.Duration * time.Second
 
-			for _, remoteEntityScenario := range h.uclpp.RemoteEntitiesScenarios() {
-				h.sendProductionLimit(remoteEntityScenario.Entity)
-			}
+			forTargets(data.SKI, "LPP", h.uclpp.RemoteEntitiesScenarios(), h.sendProductionLimit)
 		case SetConsumptionFailsafeValue:
 			var limit = data.Value
 
 			h.consumptionFailsafeLimits.Value = limit
 
-			for _, remoteEntityScenario := range h.uclpc.RemoteEntitiesScenarios() {
-				h.sendConsumptionFailsafeLimit(remoteEntityScenario.Entity)
-			}
+			forTargets(data.SKI, "LPC", h.uclpc.RemoteEntitiesScenarios(), h.sendConsumptionFailsafeLimit)
 		case SetConsumptionFailsafeDuration:
 			var limit = data.Value
 
 			h.consumptionFailsafeLimits.Duration = time.Duration(limit) * time.Second
 
-			for _, remoteEntityScenario := range h.uclpc.RemoteEntitiesScenarios() {
-				h.sendConsumptionFailsafeDuration(remoteEntityScenario.Entity)
-			}
+			forTargets(data.SKI, "LPC", h.uclpc.RemoteEntitiesScenarios(), h.sendConsumptionFailsafeDuration)
 		case SetProductionFailsafeValue:
 			var limit = data.Value
 
 			h.productionFailsafeLimits.Value = limit
 
-			for _, remoteEntityScenario := range h.uclpp.RemoteEntitiesScenarios() {
-				h.sendProductionFailsafeLimit(remoteEntityScenario.Entity)
-			}
+			forTargets(data.SKI, "LPP", h.uclpp.RemoteEntitiesScenarios(), h.sendProductionFailsafeLimit)
 		case SetProductionFailsafeDuration:
 			var limit = data.Value
 
 			h.productionFailsafeLimits.Duration = time.Duration(limit) * time.Second
 
-			for _, remoteEntityScenario := range h.uclpp.RemoteEntitiesScenarios() {
-				h.sendProductionFailsafeDuration(remoteEntityScenario.Entity)
-			}
+			forTargets(data.SKI, "LPP", h.uclpp.RemoteEntitiesScenarios(), h.sendProductionFailsafeDuration)
 			// TODO
 			// case StopConsumptionHeartbeat:
 			// 	h.uclpc.StopHeartbeat()
